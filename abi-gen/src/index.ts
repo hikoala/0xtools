@@ -8,6 +8,7 @@ import { AbiDefinition, ConstructorAbi, ContractAbi, DevdocOutput, EventAbi, Met
 import { sync as globSync } from 'glob';
 import * as Handlebars from 'handlebars';
 import * as _ from 'lodash';
+import { camelCase, capitalize } from 'lodash';
 import * as mkdirp from 'mkdirp';
 import * as yargs from 'yargs';
 
@@ -67,6 +68,7 @@ const args = yargs
         'Full usage example',
     ).argv;
 
+const upperCamelCase = (data: string) => `${capitalize(data.charAt(0))}${camelCase(data.slice(1))}`;
 const templateFilename = args.template || `${__dirname}/../../templates/${args.language}/contract.handlebars`;
 const mainTemplate = utils.getNamedContent(templateFilename);
 const template = Handlebars.compile<ContextData>(mainTemplate.content);
@@ -88,7 +90,7 @@ function registerTypeScriptHelpers(): void {
     Handlebars.registerHelper('assertionType', utils.solTypeToAssertion.bind(utils));
     Handlebars.registerHelper('returnType', utils.solTypeToTsType.bind(utils, ParamKind.Output, args.backend));
 
-    Handlebars.registerHelper('ifEquals', function(this: typeof Handlebars, arg1: any, arg2: any, options: any): void {
+    Handlebars.registerHelper('ifEquals', function (this: typeof Handlebars, arg1: any, arg2: any, options: any): void {
         return arg1 === arg2 ? options.fn(this) : options.inverse(this); // tslint:disable-line:no-invalid-this
     });
 
@@ -98,15 +100,12 @@ function registerTypeScriptHelpers(): void {
     });
 
     // Format docstring for method description
-    Handlebars.registerHelper(
-        'formatDocstringForMethodTs',
-        (docString: string): Handlebars.SafeString => {
-            // preserve newlines
-            const regex = /([ ]{4,})+/gi;
-            const formatted = docString.replace(regex, '\n * ');
-            return new Handlebars.SafeString(formatted);
-        },
-    );
+    Handlebars.registerHelper('formatDocstringForMethodTs', (docString: string): Handlebars.SafeString => {
+        // preserve newlines
+        const regex = /([ ]{4,})+/gi;
+        const formatted = docString.replace(regex, '\n * ');
+        return new Handlebars.SafeString(formatted);
+    });
     // Get docstring for method param
     Handlebars.registerHelper(
         'getDocstringForParamTs',
@@ -142,17 +141,18 @@ if (args.language === 'TypeScript') {
 }
 registerPartials();
 
-function makeLanguageSpecificName(methodName: string): string {
+function makeLanguageSpecificName(name: string, type: 'class' | 'method'): string {
     if (args.language === 'Python') {
-        let snakeCased = changeCase.snake(methodName);
+        let snakeCased = changeCase.snake(name);
         // Move leading underscores to the end.
-        const m = /^(_*).+?(_*)$/.exec(methodName);
+        const m = /^(_*).+?(_*)$/.exec(name);
         if (m) {
             snakeCased = `${snakeCased}${m[1] || m[2]}`;
         }
         return snakeCased;
+    } else {
+        return type === 'class' ? upperCamelCase(name) : camelCase(name);
     }
-    return methodName;
 }
 
 if (_.isEmpty(abiFileNames)) {
@@ -234,13 +234,14 @@ for (const abiFileName of abiFileNames) {
     const sanitizedMethodAbis = abiUtils.renameOverloadedMethods(methodAbis) as MethodAbi[];
     const methodsData = _.map(methodAbis, (methodAbi, methodAbiIndex: number) => {
         _.forEach(methodAbi.inputs, (input, inputIndex: number) => {
+            input.name = camelCase(input.name);
             if (_.isEmpty(input.name)) {
                 // Auto-generated getters don't have parameter names
                 input.name = `index_${inputIndex}`;
             }
         });
         const functionSignature = new AbiEncoder.Method(methodAbi).getSignature();
-        const languageSpecificName: string = makeLanguageSpecificName(sanitizedMethodAbis[methodAbiIndex].name);
+        const languageSpecificName: string = makeLanguageSpecificName(sanitizedMethodAbis[methodAbiIndex].name, 'method');
         // This will make templates simpler
         const methodData = {
             ...methodAbi,
@@ -255,7 +256,7 @@ for (const abiFileName of abiFileNames) {
 
     const eventAbis = ABI.filter((abi: AbiDefinition) => abi.type === ABI_TYPE_EVENT) as EventAbi[];
     const eventsData = _.map(eventAbis, (eventAbi, eventAbiIndex: number) => {
-        const languageSpecificName = makeLanguageSpecificName(eventAbi.name);
+        const languageSpecificName = makeLanguageSpecificName(eventAbi.name, 'class');
 
         const eventData = {
             ...eventAbi,
@@ -264,10 +265,10 @@ for (const abiFileName of abiFileNames) {
         return eventData;
     });
 
-    const shouldIncludeBytecode = methodsData.find(methodData => methodData.stateMutability === 'pure') !== undefined;
+    const shouldIncludeBytecode = methodsData.find((methodData) => methodData.stateMutability === 'pure') !== undefined;
 
     const contextData = {
-        contractName: namedContent.name,
+        contractName: upperCamelCase(namedContent.name),
         ctor,
         deployedBytecode: shouldIncludeBytecode ? deployedBytecode : undefined,
         ABI: ABI as ContractAbi,
@@ -285,7 +286,7 @@ for (const abiFileName of abiFileNames) {
             execSync(`black --line-length 79 ${outFilePath}`);
         } catch (e) {
             const BLACK_RC_CANNOT_PARSE = 123; // empirical black exit code
-            if (e.status === BLACK_RC_CANNOT_PARSE) {
+            if ((e as any).status === BLACK_RC_CANNOT_PARSE) {
                 logUtils.warn(
                     'Failed to reformat generated Python with black.  Exception thrown by execSync("black ...") follows.',
                 );
